@@ -31,6 +31,11 @@
 
 ## 2. Windows PowerShell Setup & Quick Verification
 
+git clone https://github.com/jcsagre1987/Gutenberg-Chaotic-Primordial-AI-SSM-Architecture.git
+cd Gutenberg-Chaotic-Primordial-AI-SSM-Architecture
+python -m pip install torch
+python gutenberg_chaotic_primordial_v0_3_1.py --mode self-test
+
 ### Requirements
 
 * **OS & Shell:** Windows 10 / 11 with **Windows PowerShell 5.1** or **PowerShell 7+**
