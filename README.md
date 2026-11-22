@@ -1,593 +1,346 @@
-# Gutenberg Chaotic Primordial
+# Gutenberg Chaotic Primordial (`v0.3.0`)
 
-**Version:** 0.3.0  
-**Author:** Juan Carlo Sagre  
-**License:** Apache License 2.0  
-**Implementation:** Standalone Python script using PyTorch
+**Gutenberg Chaotic Primordial** is a standalone, single-file PyTorch implementation of a hybrid **Selective Diagonal State-Space Model (SSM) + Dual-Stream Delta-Rule Associative Memory** language model. Designed for transparent research, reproducible CPU/GPU training, and $O(1)$-per-token stateful streaming inference, it requires zero external tokenizer files and zero custom CUDA kernels.
 
-Gutenberg Chaotic Primordial is an experimental, self-contained language-model training and inference engine. Version 0.3.0 combines a **Selective Diagonal State-Space Model (SSM)** with a **dual-stream, delta-rule associative memory**. It uses lossless UTF-8 byte-level tokenization and supports recurrent, stateful streaming inference.
-
-The project is designed to be portable: users can keep their own datasets wherever they are stored and pass the location to the script at runtime. **You do not need to edit the Python source to change dataset directories.**
-
-> This repository provides a model architecture and experimental training pipeline. It does not claim production-grade language understanding or guarantee a particular result from a user's dataset. Training quality depends on the data, model configuration, compute resources, and training settings.
+* **Author:** Juan Carlo Sagre
+* **License:** Apache-2.0
+* **Engine File:** `gutenberg_chaotic_primordial_v0_3_0.py`
 
 ---
 
-## 1. Architecture at a glance
+## Table of Contents
 
-The model is a hybrid sequence architecture built from the following components:
+1. [Architecture Highlights](#1-architecture-highlights)
+2. [Installation & Quick Verification](#2-installation--quick-verification)
+3. [Workspace Layout & Automatic Checkpoint Management](#3-workspace-layout--automatic-checkpoint-management)
+4. [Using Your Own Datasets & Directories](#4-using-your-own-datasets--directories)
+5. [Training, Resuming, Expanding & Distilling Checkpoints](#5-training-resuming-expanding--distilling-checkpoints)
+6. [Running Math & Reasoning Benchmarks](#6-running-math--reasoning-benchmarks)
+7. [Text Generation & Interactive Terminal Chat](#7-text-generation--interactive-terminal-chat)
+8. [Model Scaling Presets & Full CLI Reference](#8-model-scaling-presets--full-cli-reference)
+9. [Troubleshooting & Performance Tips](#9-troubleshooting--performance-tips)
 
-- **Lossless UTF-8 byte-level tokenizer** — vocabulary size 260: four special tokens plus all 256 byte values. This avoids a learned word/subword vocabulary and has no out-of-vocabulary byte values.
-- **Causal depthwise 1D convolution** — provides local causal mixing and carries its convolution state across chunks.
-- **Selective Diagonal SSM** — input-selective state updates with exact zero-order-hold discretization and chunkwise parallel scanning.
-- **Dual-stream Delta-Rule Associative Memory** — multi-head fast-weight memory with gated delta-rule updates, shifted-key/phrase context, and recurrent memory state.
-- **SwiGLU feed-forward network** — channel mixing in the residual blocks.
-- **Stateful streaming path** — recurrent states are passed from one input chunk or token to the next, rather than retaining the entire prior token sequence. This provides constant-size recurrent state with respect to the length of the stream for a fixed model configuration.
+---
 
-Conceptual layer flow:
+## 1. Architecture Highlights
 
-```text
-UTF-8 bytes
-    │
-    ▼
-Token Embedding
-    │
-    ▼
-Causal Convolution + Selective Diagonal SSM
-    │
-    ▼
-Dual-Stream Delta-Rule Associative Memory
-    │
-    ▼
-SwiGLU / Residual Processing
-    │
-    ▼
-Normalization + Language-Model Head
-    │
-    ▼
-Next-byte logits / generated text
-```
+* **Lossless UTF-8 Byte-Level Tokenizer (`vocab_size = 260`):** Encodes any UTF-8 string directly into raw bytes (`4..259`) plus four reserved control tokens (`PAD=0`, `BOS=1`, `EOS=2`, `DELIM=3`). There are no out-of-vocabulary (`<UNK>`) tokens and no external vocabulary files to manage.
+* **Selective Diagonal SSM (`SelectiveDiagonalSSM`):** Combines a causal depthwise 1D convolution (`conv_kernel_size = 3`), input-dependent step sizes ($\Delta_t$), multi-timescale log-spaced decay initialization, exact Zero-Order Hold (ZOH) discretization, and an $O(\log C)$ parallel prefix scan (`ssm_chunk_size = 64`), followed by a pre-normalized SwiGLU feed-forward block.
+* **Dual-Stream Delta-Rule Associative Memory (`DeltaRuleAssociativeMemory`):** Maintains fast-weight associative matrices ($d_{\text{head}} \times d_{\text{head}}$ per head) with a 1-step key shift, learnable bigram phrase mixing, $L_2$-normalized queries and keys, gated delta-rule updates ($\beta_t, \gamma_t$), chunkwise triangular-solve parallel scanning, and a learnable sigmoid residual gate per layer.
+* **Exact $O(1)$ Streaming Inference:** Full-sequence parallel training and token-by-token autoregressive generation are mathematically equivalent, keeping inference memory constant regardless of sequence length.
 
-The implementation uses chunkwise scans for the SSM and delta-rule memory paths. It includes internal checks for chunk continuation, streaming equivalence, and finite gradients.
+---
 
-## 2. Main capabilities
+## 2. Installation & Quick Verification
 
-- Train a new model from the built-in Stage 1 and Stage 2 mathematics curriculum.
-- Train from a user-supplied dataset file or a directory containing supported dataset files.
-- Continue training from a compatible v0.3.x checkpoint.
-- Expand a smaller checkpoint to a wider/deeper model using the implemented Net2Net-style expansion routine.
-- Consolidate training with one or more frozen teacher checkpoints through KL-divergence knowledge distillation.
-- Run foundation-math and higher-math benchmark suites.
-- Generate text from a prompt or start an interactive terminal chat session.
-- Save sequential checkpoints, JSON training reports, and a SHA-256 checkpoint digest.
-- Select CPU or CUDA execution, control CPU threads, and select supported compute precision.
-
-## 3. Requirements
-
-- **Python:** 3.10 or newer (the accompanying usage guide records testing with Python 3.11).
-- **Core dependency:** PyTorch (`torch`). CPU is supported; CUDA can be selected when available and correctly configured.
-- **Optional dataset dependency:**
-  - `pyarrow` is required for Parquet (`.parquet`) files.
-  - `pyarrow` or Hugging Face `datasets` can be used to read Arrow (`.arrow`) files.
-  - `.jsonl`, `.ndjson`, `.json`, `.txt`, and `.md` are handled using Python's standard library and need no additional dataset package.
-
-Install PyTorch using the installation command appropriate for your operating system and CPU/CUDA environment. For example, a CPU-only installation can be obtained from the official PyTorch installation selector: <https://pytorch.org/get-started/locally/>.
-
-Check the command-line options available in the copy of the script you are using:
+### Requirements
+* **Python:** `3.10` or newer (`3.11` recommended)
+* **Required Package:** `torch` (CPU or CUDA build)
+* **Optional Packages:** `pyarrow` or `datasets` (only needed if you plan to train directly on `.parquet` or Hugging Face `.arrow` dataset files; `.jsonl`, `.json`, `.txt`, and `.md` work out of the box with standard Python)
 
 ```bash
-python gutenberg_chaotic_primordial_v0_3_0.py --help
+pip install torch
+# Optional: enable .parquet and Hugging Face .arrow dataset loading
+pip install pyarrow
 ```
 
-## 4. First run and self-test
-
-Run the built-in verification before training:
+### Verify Your Environment
+Before starting a training run, execute the built-in self-test suite to verify chunkwise SSM continuation, associative memory state equivalence, $O(1)$ streaming parity, and finite gradients:
 
 ```bash
-python gutenberg_chaotic_primordial_v0_3_0.py --mode self-test --device cpu --threads 2
+python gutenberg_chaotic_primordial_v0_3_0.py --mode self-test
 ```
 
-The self-test checks:
+A healthy installation outputs `"overall_status": "PASS"`.
 
-1. Full-sequence output against chunked SSM-block continuation.
-2. Full-sequence output against chunked delta-rule-memory continuation.
-3. Full forward inference against token-by-token streaming inference, plus a backward pass and finite-gradient checks.
+---
 
-A successful run prints a JSON report with `"overall_status": "PASS"`.
+## 3. Workspace Layout & Automatic Checkpoint Management
 
-The normal pretraining flow also runs these self-tests before it proceeds to load the training data and start optimization.
-
-## 5. Portable dataset loading — use your own directories
-
-### No hard-coded dataset directory
-
-Use `--data-path` to provide the dataset location when launching the script. The value can be:
-
-- A path to one supported dataset file; or
-- A path to a directory. The loader recursively searches that directory and its subdirectories for supported file extensions.
-
-The location can be relative to the current working directory or an absolute path. Put paths containing spaces inside quotes. The examples below are templates: replace the path with the location on **your own** computer.
-
-**Windows PowerShell example:**
-
-```powershell
-python .\gutenberg_chaotic_primordial_v0_3_0.py `
-  --data-path "D:\Training Data\My Custom Dataset" `
-  --max-docs 25000 `
-  --math-replay-ratio 0.20 `
-  --steps 1500 `
-  --lr 4e-4 `
-  --device cpu `
-  --threads 2
-```
-
-**Linux / macOS example:**
-
-```bash
-python ./gutenberg_chaotic_primordial_v0_3_0.py \
-  --data-path "/home/your-user/datasets/my_custom_dataset" \
-  --max-docs 25000 \
-  --math-replay-ratio 0.20 \
-  --steps 1500 \
-  --lr 4e-4 \
-  --device cpu \
-  --threads 2
-```
-
-**Single-file example:**
-
-```bash
-python gutenberg_chaotic_primordial_v0_3_0.py \
-  --data-path "/path/to/your/data/training.jsonl" \
-  --steps 1200
-```
-
-The script resolves and validates the path at runtime. If the path does not exist, or no supported dataset files are found, it reports an error containing the resolved location. No source-code path edits are required.
-
-### Supported file formats
-
-| Extension | Loader behavior | Additional package |
-|---|---|---|
-| `.jsonl`, `.ndjson` | Reads one JSON record per non-empty line | None |
-| `.json` | Reads a JSON list, supported record-list wrapper, or a single record | None |
-| `.txt`, `.md` | Splits into documents on blank lines; if there are no blank-line separators, uses lines | None |
-| `.parquet` | Reads Parquet rows | `pyarrow` |
-| `.arrow` | Reads Arrow IPC or Hugging Face Arrow dataset files | `pyarrow` or `datasets` |
-
-For a directory input, supported files are found recursively. The loader ignores common Hugging Face metadata files named `dataset_info.json` and `state.json`.
-
-### Recognized record structures
-
-For structured records, the loader extracts text from these common fields or combinations:
-
-| Record structure | Extracted training text |
-|---|---|
-| A plain string | The string itself |
-| `{"text": "..."}` (also `story`, `content`, `document`, `body`, or `passage`) | The selected text field |
-| `{"messages": [{"role": "user", "content": "..."}, ...]}` | Role-labelled message content |
-| `{"instruction": "...", "input": "...", "output": "..."}` | Instruction, optional input, and response |
-| `{"instruction": "...", "response": "..."}` | Instruction and response |
-| `{"prompt": "...", "response": "..."}` or `completion` | User prompt and assistant response |
-| `{"input": "...", "output": "..."}` | Input and output |
-| `{"question": "...", "answer": "..."}` | Question and answer |
-| `{"word": "...", "definition": "..."}` or `meaning` | Word and meaning, with optional example |
-
-For `.json` files, a top-level list is accepted. A top-level object can contain a list under `data`, `rows`, `records`, `examples`, or `train`; otherwise it is treated as one record. Records that do not match a supported structure or contain too little text are skipped.
-
-### Dataset sampling and math replay
-
-| Option | Default | Meaning |
-|---|---:|---|
-| `--max-docs` | `25000` | Maximum number of valid records sampled from the discovered files. Use `0` to load all valid records. |
-| `--val-ratio` | `0.05` | Fraction of sampled documents set aside for validation. |
-| `--math-replay-ratio` | `0.20` | Fraction of built-in Stage 1/2 mathematics examples interleaved with external-dataset training. Set to `0` to disable math replay. |
-| `--seq-len` | `128` | Token sequence length used when packing the training data. |
-| `--seed` | `1701` | Seed used for reproducible sampling and training setup. |
-
-The loader tokenizes documents and packs them into sequence blocks. It inserts padding gaps between documents to prevent recurrent state from carrying directly from one document into the next within the packed stream.
-
-When `--data-path` is omitted, the script uses its built-in mathematics curriculum instead of searching for an external dataset. The built-in material includes binary conversion, carry addition, borrow subtraction, multiplication, pre-algebra, algebra, geometry, trigonometry, and calculus.
-
-## 6. Training examples
-
-### Train from the built-in mathematics curriculum
-
-```bash
-python gutenberg_chaotic_primordial_v0_3_0.py \
-  --steps 1200 \
-  --lr 4e-4 \
-  --device cpu \
-  --threads 2
-```
-
-### Train from your external dataset
-
-```bash
-python gutenberg_chaotic_primordial_v0_3_0.py \
-  --data-path "/your/custom/dataset/location" \
-  --max-docs 25000 \
-  --math-replay-ratio 0.20 \
-  --steps 1500 \
-  --lr 4e-4 \
-  --device cpu \
-  --threads 2
-```
-
-### Run without saving a checkpoint
-
-Use `--no-save` for a trial run that trains and reports results without writing the `TestXX.pt` checkpoint or its `TestXX.json` report:
-
-```bash
-python gutenberg_chaotic_primordial_v0_3_0.py \
-  --data-path "/your/custom/dataset/location" \
-  --steps 20 \
-  --no-save
-```
-
-### Continue training from a checkpoint
-
-```bash
-python gutenberg_chaotic_primordial_v0_3_0.py \
-  --init-checkpoint "/path/to/Models/Test01.pt" \
-  --steps 450 \
-  --lr 8e-5
-```
-
-When using `--init-checkpoint`, the model configuration supplied to the new run must exactly match the saved checkpoint configuration. This includes the architecture settings represented by `--d-model`, `--layers`, `--state-size`, `--heads`, `--conv-kernel`, `--ssm-chunk-size`, `--ffn-expansion`, and `--dropout`. Use the original settings when continuing an existing model.
-
-### Expand a checkpoint
-
-The expansion routine can increase model width, depth, and state size while retaining copied weights from the source model. The target must not be smaller than the source in `d_model`, layer count, or state size. The target head count must match the source head count, and `d_model` must be divisible by the number of heads.
-
-```bash
-python gutenberg_chaotic_primordial_v0_3_0.py \
-  --expand-checkpoint "/path/to/Models/Test01.pt" \
-  --d-model 320 \
-  --layers 5 \
-  --heads 8 \
-  --ffn-expansion 2.2 \
-  --steps 250 \
-  --lr 8e-5
-```
-
-### Multi-teacher knowledge distillation
-
-One or more teacher checkpoint paths can be supplied as a comma-separated list. Teacher models are loaded in evaluation mode and frozen while the student is trained. The implementation averages teacher probability distributions and uses a KL-divergence distillation term weighted by `--distill-alpha`.
-
-```bash
-python gutenberg_chaotic_primordial_v0_3_0.py \
-  --init-checkpoint "/path/to/student/Models/Test01.pt" \
-  --teacher-checkpoints "/path/to/teacher-a.pt,/path/to/teacher-b.pt" \
-  --distill-alpha 0.20 \
-  --steps 450 \
-  --lr 8e-5
-```
-
-## 7. Model-size presets
-
-The accompanying v0.3.0 usage guide lists these reference configurations:
-
-| Preset | `--d-model` | `--layers` | `--heads` | `--ffn-expansion` | Approx. parameters |
-|---|---:|---:|---:|---:|---:|
-| Nano (default) | 256 | 4 | 8 | 2.0 | 4,875,972 (~4.88M) |
-| Small | 320 | 5 | 8 | 2.2 | 10,055,285 (~10.06M) |
-| Medium | 384 | 5 | 8 | 2.35 | 15,084,533 (~15.08M) |
-
-These are model-size references, not hardware-performance guarantees. Actual memory use and training speed depend on sequence length, batch size, gradient accumulation, precision, and the available CPU/GPU.
-
-## 8. Evaluation, generation, and chat
-
-### Math evaluation
-
-The combined benchmark runs both suites in one pass:
-
-```bash
-python gutenberg_chaotic_primordial_v0_3_0.py \
-  --mode eval-all-math \
-  --checkpoint "/path/to/Models/Test01.pt"
-```
-
-| Evaluation mode | Cases | Coverage |
-|---|---:|---|
-| `eval-math` | 40 | Addition, subtraction, multiplication, and base-10 to base-2 conversion |
-| `eval-higher-math` | 25 | Pre-algebra, algebra, geometry, trigonometry, and calculus |
-| `eval-all-math` | 65 | Both suites combined |
-
-The current evaluator checks whether an expected answer marker appears in generated output. Treat these scores as results from this project's built-in benchmark—not as a complete assessment of mathematical reasoning or general intelligence.
-
-If `--checkpoint` is omitted for an evaluation or inference mode, the program loads the highest-numbered `TestXX.pt` file under the selected output root's `Models` directory.
-
-### Generate text
-
-```bash
-python gutenberg_chaotic_primordial_v0_3_0.py \
-  --mode generate \
-  --checkpoint "/path/to/Models/Test01.pt" \
-  --prompt "Alg: Solve 4x + 7 = 31 ->" \
-  --temperature 0.0
-```
-
-Use `--temperature 0.0` for deterministic greedy generation. For more varied text, the usage guide suggests experimenting with approximately `0.5` to `0.7`.
-
-### Interactive terminal chat
-
-```bash
-python gutenberg_chaotic_primordial_v0_3_0.py \
-  --mode chat \
-  --checkpoint "/path/to/Models/Test01.pt" \
-  --temperature 0.6
-```
-
-Type `exit` or `quit` to close the interactive session.
-
-## 9. Checkpoints, reports, and portable output paths
-
-By default, output is placed beside the Python script. The script creates these directories automatically:
+By default, the script creates and manages `Models/` and `reports/` inside the directory where `gutenberg_chaotic_primordial_v0_3_0.py` lives. If you keep your code and experiment outputs in separate folders, pass `--output-root /path/to/workspace`:
 
 ```text
 <output-root>/
+├── gutenberg_chaotic_primordial_v0_3_0.py
 ├── Models/
-│   ├── Test01.pt
-│   ├── Test02.pt
-│   └── ...
+│   ├── Test01.pt        # Sequential atomic model checkpoints
+│   └── Test02.pt
 └── reports/
-    ├── Test01.json
-    ├── Test02.json
-    └── ...
+    ├── Test01.json      # Reproducibility metadata, metrics & SHA-256 hashes
+    └── Test02.json
 ```
 
-Each training run receives the next available sequential identifier. Existing checkpoints are not overwritten. The JSON report contains run metadata, model configuration, dataset statistics, environment details, and the SHA-256 digest of the checkpoint.
-
-To store outputs somewhere else—for example, on a different drive—set `--output-root`:
-
-```powershell
-python .\gutenberg_chaotic_primordial_v0_3_0.py `
-  --data-path "D:\Training Data\My Corpus" `
-  --output-root "E:\GCP Experiments\Run 01" `
-  --steps 1500
-```
-
-The dataset directory and output directory are independent settings. You can store the source code, dataset, and checkpoints in three different locations.
-
-## 10. Useful runtime options
-
-| Option | Default | Description |
-|---|---|---|
-| `--device` | `auto` | Select `auto`, `cpu`, or `cuda`. |
-| `--threads` | `0` | CPU thread count; `0` auto-detects physical cores. |
-| `--dtype` | `float32` | Select `float32`, `bfloat16`, or `auto`; float32 is the documented CPU recommendation. |
-| `--batch-size` | `8` | Training batch size. |
-| `--grad-accum` | `1` | Number of gradient-accumulation steps. |
-| `--steps` | `1200` | Number of optimizer steps. |
-| `--lr` | `4e-4` | Learning rate. |
-| `--checkpoint` | unset | Explicit checkpoint path for evaluation or inference. |
-| `--output-root` | Script directory | Root directory for `Models/` and `reports/`. |
-| `--no-save` | off | Skip checkpoint and report creation for a trial run. |
-
-Run `--help` for the complete list of options.
-
-## 11. Current validation record
-
-The v0.3.0 script's CPU self-test was executed during preparation of this README using `--device cpu --threads 2`. It returned `overall_status: PASS` for all three test groups:
-
-- SSM block chunk-continuation maximum absolute output error: approximately `2.38e-7`.
-- Delta-rule memory chunk-continuation maximum absolute output error: approximately `1.19e-7`.
-- Full-forward versus token-streaming maximum absolute logit error: approximately `1.67e-6`; the backward check reported finite gradients for 87 trainable tensors.
-
-This is a focused architecture/self-test result. It is not evidence that every dataset, model size, operating system, accelerator, or training configuration has been validated. Run the self-test in your own environment before beginning a substantial training job.
-
-## 12. Responsible use and dataset ownership
-
-Users are responsible for ensuring that they have the rights and permissions necessary to use their chosen training datasets, checkpoints, and other inputs. The repository's license applies to the project code; it does not automatically grant rights to third-party datasets or model weights.
+* **Sequential, Non-Destructive Saves:** Every completed training run writes the next available `TestXX.pt` and `TestXX.json` via atomic file replacement (`fsync` + rename) so existing checkpoints are never overwritten.
+* **Automatic Latest-Checkpoint Discovery:** In inference or evaluation modes (`generate`, `chat`, `eval-math`, `eval-higher-math`, `eval-all-math`), omitting `--checkpoint` automatically selects the highest-numbered `TestXX.pt` inside `<output-root>/Models/`.
 
 ---
 
-## License
+## 4. Using Your Own Datasets & Directories
 
-Copyright 2026 Juan Carlo Sagre.
+You do not need to move your datasets into the repository folder or convert them into a rigid format. Point `--data-path` to **any single file** or **any root directory** on your machine—the loader recursively scans subdirectories (`rglob`) and automatically skips Hugging Face metadata files (`dataset_info.json`, `state.json`).
 
-This project is licensed under the Apache License, Version 2.0. You may obtain a copy of the License at <https://www.apache.org/licenses/LICENSE-2.0> or in the accompanying [`LICENSE`](LICENSE) file. The full license text is reproduced below.
+### Supported File Formats
 
-```text
-                                 Apache License
-                           Version 2.0, January 2004
-                        http://www.apache.org/licenses/
+| Extension | How It Is Parsed | Extra Dependency |
+| :--- | :--- | :---: |
+| `.jsonl`, `.ndjson` | Line-delimited JSON objects (malformed lines are safely skipped) | None |
+| `.json` | Top-level JSON array `[...]`, single object, or dict containing `"data"`, `"rows"`, `"records"`, `"examples"`, or `"train"` | None |
+| `.txt`, `.md` | Split into documents on blank lines (`\n\n`), or line-by-line if single-spaced | None |
+| `.parquet` | Apache Parquet tables read row-by-row | `pyarrow` |
+| `.arrow` | Hugging Face Arrow IPC stream or file shards (point directly at a cached HF dataset folder) | `pyarrow` or `datasets` |
 
-   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+### Supported Record Schemas (Automatic Detection)
 
-   1. Definitions.
+When reading `.jsonl`, `.json`, `.parquet`, or `.arrow` records, the loader automatically inspects each dictionary and formats it into clean training text:
 
-      "License" shall mean the terms and conditions for use, reproduction,
-      and distribution as defined by Sections 1 through 9 of this document.
+1. **Multi-Turn Chat (`messages`):**
+   ```json
+   {"messages": [{"role": "user", "content": "Hello!"}, {"role": "assistant", "content": "Hi there."}]}
+   ```
+   *Formatted as:* `user: Hello!\nassistant: Hi there.`
 
-      "Licensor" shall mean the copyright owner or entity authorized by
-      the copyright owner that is granting the License.
+2. **Instruction Tuning (`instruction` + `output` or `response`, optional `input`):**
+   ```json
+   {"instruction": "Summarize the text.", "input": "Water boils at 100C.", "output": "Water boils at 100 degrees Celsius."}
+   ```
+   *Formatted as:* `Instruction: ...\nInput: ...\nResponse: ...`
 
-      "Legal Entity" shall mean the union of the acting entity and all
-      other entities that control, are controlled by, or are under common
-      control with that entity. For the purposes of this definition,
-      "control" means (i) the power, direct or indirect, to cause the
-      direction or management of such entity, whether by contract or
-      otherwise, or (ii) ownership of fifty percent (50%) or more of the
-      outstanding shares, or (iii) beneficial ownership of such entity.
+3. **Question & Answer (`question` + `answer`):**
+   ```json
+   {"question": "What planet is closest to the Sun?", "answer": "Mercury."}
+   ```
+   *Formatted as:* `Question: ...\nAnswer: ...`
 
-      "You" (or "Your") shall mean an individual or Legal Entity
-      exercising permissions granted by this License.
+4. **Vocabulary / Dictionary (`word` + `definition` or `meaning`, optional `example`):**
+   ```json
+   {"word": "ephemeral", "definition": "lasting for a very short time", "example": "ephemeral spring blossoms"}
+   ```
+   *Formatted as:* `Word: ephemeral | Meaning: lasting for a very short time | Example: ephemeral spring blossoms`
 
-      "Source" form shall mean the preferred form for making modifications,
-      including but not limited to software source code, documentation
-      source, and configuration files.
+5. **Plain Prose / Stories (`text`, `story`, `content`, `document`, `body`, or `passage`):**
+   ```json
+   {"story": "Once upon a time, a small clockwork bird learned to sing."}
+   ```
+   *Extracted directly as raw text.*
 
-      "Object" form shall mean any form resulting from mechanical
-      transformation or translation of a Source form, including but
-      not limited to compiled object code, generated documentation,
-      and conversions to other media types.
+6. **Prompt / Completion (`prompt` + `response` or `completion`) & `input` / `output`:**
+   Automatically normalized into `User:` / `Assistant:` or `Input:` / `Output:` pairs.
 
-      "Work" shall mean the work of authorship, whether in Source or
-      Object form, made available under the License, as indicated by a
-      copyright notice that is included in or attached to the work
-      (an example is provided in the Appendix below).
+### Memory-Safe Streaming, Document Isolation & Math Replay
 
-      "Derivative Works" shall mean any work, whether in Source or Object
-      form, that is based on (or derived from) the Work and for which the
-      editorial revisions, annotations, elaborations, or other modifications
-      represent, as a whole, an original work of authorship. For the purposes
-      of this License, Derivative Works shall not include works that remain
-      separable from, or merely link (or bind by name) to the interfaces of,
-      the Work and Derivative Works thereof.
+* **Constant-RAM Reservoir Sampling (`--max-docs`):** Large datasets (hundreds of thousands of documents) are streamed using uniform reservoir sampling (`--max-docs 25000` by default) so RAM usage stays bounded. Set `--max-docs 0` to load every record in the directory.
+* **Cross-Document State Isolation:** Each document is encoded as `[BOS] ... [EOS]` followed by `4` `PAD` tokens (`PAD_TOKEN_ID = 0`, ignored by cross-entropy loss) before packing into `[N, seq_len + 1]` blocks, preventing recurrent SSM and associative memory states from bleeding across unrelated documents.
+* **Catastrophic Forgetting Prevention (`--math-replay-ratio`):** When training on external prose or instruction datasets via `--data-path`, the loader interleaves built-in Stage-1 and Stage-2 math traces (`--math-replay-ratio 0.20` = 20% math by default) to preserve arithmetic and symbolic reasoning. Set `--math-replay-ratio 0.0` if you want pure language training.
 
-      "Contribution" shall mean any work of authorship, including
-      the original version of the Work and any modifications or additions
-      to that Work or Derivative Works thereof, that is intentionally
-      submitted to Licensor for inclusion in the Work by the copyright owner
-      or by an individual or Legal Entity authorized to submit on behalf of
-      the copyright owner. For the purposes of this definition, "submitted"
-      means any form of electronic, verbal, or written communication sent
-      to the Licensor or its representatives, including but not limited to
-      communication on electronic mailing lists, source code control systems,
-      and issue tracking systems that are managed by, or on behalf of, the
-      Licensor for the purpose of discussing and improving the Work, but
-      excluding communication that is conspicuously marked or otherwise
-      designated in writing by the copyright owner as "Not a Contribution."
+---
 
-      "Contributor" shall mean Licensor and any individual or Legal Entity
-      on behalf of whom a Contribution has been received by Licensor and
-      subsequently incorporated within the Work.
+## 5. Training, Resuming, Expanding & Distilling Checkpoints
 
-   2. Grant of Copyright License. Subject to the terms and conditions of
-      this License, each Contributor hereby grants to You a perpetual,
-      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
-      copyright license to reproduce, prepare Derivative Works of,
-      publicly display, publicly perform, sublicense, and distribute the
-      Work and such Derivative Works in Source or Object form.
+### A. Train from Scratch on the Built-In Math Curriculum
+Omitting `--data-path`, `--init-checkpoint`, and `--expand-checkpoint` trains a fresh model on the built-in Stage-1 & Stage-2 mathematics curriculum (8-bit binary conversion, carry addition, borrow subtraction, multiplication, pre-algebra, algebra, geometry, trigonometry, and calculus):
 
-   3. Grant of Patent License. Subject to the terms and conditions of
-      this License, each Contributor hereby grants to You a perpetual,
-      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
-      (except as stated in this section) patent license to make, have made,
-      use, offer to sell, sell, import, and otherwise transfer the Work,
-      where such license applies only to those patent claims licensable
-      by such Contributor that are necessarily infringed by their
-      Contribution(s) alone or by combination of their Contribution(s)
-      with the Work to which such Contribution(s) was submitted. If You
-      institute patent litigation against any entity (including a
-      cross-claim or counterclaim in a lawsuit) alleging that the Work
-      or a Contribution incorporated within the Work constitutes direct
-      or contributory patent infringement, then any patent licenses
-      granted to You under this License for that Work shall terminate
-      as of the date such litigation is filed.
+```bash
+# Default Nano model (4.88M parameters: d_model=256, layers=4)
+python gutenberg_chaotic_primordial_v0_3_0.py --steps 1200 --lr 4e-4
 
-   4. Redistribution. You may reproduce and distribute copies of the
-      Work or Derivative Works thereof in any medium, with or without
-      modifications, and in Source or Object form, provided that You
-      meet the following conditions:
-
-      (a) You must give any other recipients of the Work or
-          Derivative Works a copy of this License; and
-
-      (b) You must cause any modified files to carry prominent notices
-          stating that You changed the files; and
-
-      (c) You must retain, in the Source form of any Derivative Works
-          that You distribute, all copyright, patent, trademark, and
-          attribution notices from the Source form of the Work,
-          excluding those notices that do not pertain to any part of
-          the Derivative Works; and
-
-      (d) If the Work includes a "NOTICE" text file as part of its
-          distribution, then any Derivative Works that You distribute must
-          include a readable copy of the attribution notices contained
-          within such NOTICE file, excluding those notices that do not
-          pertain to any part of the Derivative Works, in at least one
-          of the following places: within a NOTICE text file distributed
-          as part of the Derivative Works; within the Source form or
-          documentation, if provided along with the Derivative Works; or,
-          within a display generated by the Derivative Works, if and
-          wherever such third-party notices normally appear. The contents
-          of the NOTICE file are for informational purposes only and
-          do not modify the License. You may add Your own attribution
-          notices within Derivative Works that You distribute, alongside
-          or as an addendum to the NOTICE text from the Work, provided
-          that such additional attribution notices cannot be construed
-          as modifying the License.
-
-      You may add Your own copyright statement to Your modifications and
-      may provide additional or different license terms and conditions
-      for use, reproduction, or distribution of Your modifications, or
-      for any such Derivative Works as a whole, provided Your use,
-      reproduction, and distribution of the Work otherwise complies with
-      the conditions stated in this License.
-
-   5. Submission of Contributions. Unless You explicitly state otherwise,
-      any Contribution intentionally submitted for inclusion in the Work
-      by You to the Licensor shall be under the terms and conditions of
-      this License, without any additional terms or conditions.
-      Notwithstanding the above, nothing herein shall supersede or modify
-      the terms of any separate license agreement you may have executed
-      with Licensor regarding such Contributions.
-
-   6. Trademarks. This License does not grant permission to use the trade
-      names, trademarks, service marks, or product names of the Licensor,
-      except as required for reasonable and customary use in describing the
-      origin of the Work and reproducing the content of the NOTICE file.
-
-   7. Disclaimer of Warranty. Unless required by applicable law or
-      agreed to in writing, Licensor provides the Work (and each
-      Contributor provides its Contributions) on an "AS IS" BASIS,
-      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
-      implied, including, without limitation, any warranties or conditions
-      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
-      PARTICULAR PURPOSE. You are solely responsible for determining the
-      appropriateness of using or redistributing the Work and assume any
-      risks associated with Your exercise of permissions under this License.
-
-   8. Limitation of Liability. In no event and under no legal theory,
-      whether in tort (including negligence), contract, or otherwise,
-      unless required by applicable law (such as deliberate and grossly
-      negligent acts) or agreed to in writing, shall any Contributor be
-      liable to You for damages, including any direct, indirect, special,
-      incidental, or consequential damages of any character arising as a
-      result of this License or out of the use or inability to use the
-      Work (including but not limited to damages for loss of goodwill,
-      work stoppage, computer failure or malfunction, or any and all
-      other commercial damages or losses), even if such Contributor
-      has been advised of the possibility of such damages.
-
-   9. Accepting Warranty or Additional Liability. While redistributing
-      the Work or Derivative Works thereof, You may choose to offer,
-      and charge a fee for, acceptance of support, warranty, indemnity,
-      or other liability obligations and/or rights consistent with this
-      License. However, in accepting such obligations, You may act only
-      on Your own behalf and on Your sole responsibility, not on behalf
-      of any other Contributor, and only if You agree to indemnify,
-      defend, and hold each Contributor harmless for any liability
-      incurred by, or claims asserted against, such Contributor by reason
-      of your accepting any such warranty or additional liability.
-
-   END OF TERMS AND CONDITIONS
-
-   APPENDIX: How to apply the Apache License to your work.
-
-      To apply the Apache License to your work, attach the following
-      boilerplate notice, with the fields enclosed by brackets "[]"
-      replaced with your own identifying information. (Don't include
-      the brackets!)  The text should be enclosed in the appropriate
-      comment syntax for the file format. We also recommend that a
-      file or class name and description of purpose be included on the
-      same "printed page" as the copyright notice for easier
-      identification within third-party archives.
-
-   Copyright 2026 Juan Carlo Sagre
-
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
-
-       http://www.apache.org/licenses/LICENSE-2.0
-
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
+# Custom Small model (10.06M parameters: d_model=320, layers=5, ffn_expansion=2.2)
+python gutenberg_chaotic_primordial_v0_3_0.py --d-model 320 --layers 5 --ffn-expansion 2.2 --steps 1200 --lr 4e-4
 ```
+
+### B. Train on Your Own External Dataset Directory
+Point `--data-path` to any folder or file on Linux, macOS, or Windows:
+
+```bash
+# Linux / macOS example
+python gutenberg_chaotic_primordial_v0_3_0.py \
+  --data-path "/home/user/datasets/my_corpus" \
+  --max-docs 25000 \
+  --math-replay-ratio 0.20 \
+  --steps 1500 \
+  --lr 4e-4
+
+# Windows PowerShell example
+python gutenberg_chaotic_primordial_v0_3_0.py --data-path "D:\Datasets\Tinystories" --max-docs 25000 --math-replay-ratio 0.20 --steps 1500 --lr 4e-4
+```
+
+### C. Continue Training an Existing Checkpoint (`--init-checkpoint`)
+Resume training from a saved `v0.3.x` checkpoint. Your `--d-model`, `--layers`, `--heads`, and `--ffn-expansion` flags **must match** the source checkpoint's configuration (saved inside `reports/TestXX.json`):
+
+```bash
+python gutenberg_chaotic_primordial_v0_3_0.py \
+  --init-checkpoint "Models/Test02.pt" \
+  --d-model 320 \
+  --layers 5 \
+  --ffn-expansion 2.2 \
+  --seed 2026 \
+  --steps 500 \
+  --lr 8e-5
+```
+
+### D. Function-Preserving Model Expansion (`--expand-checkpoint`)
+Scale a smaller checkpoint into a wider and/or deeper architecture using Net2Net-style weight preservation. Existing channels retain their learned weights (with LayerNorm variance compensation and near-identity initialization for newly added layers), while extra channels receive small symmetry-breaking noise:
+
+```bash
+# Expand 10.06M (d_model=320, ffn=2.2) -> 15.08M (d_model=384, ffn=2.35)
+python gutenberg_chaotic_primordial_v0_3_0.py \
+  --expand-checkpoint "Models/Test03.pt" \
+  --d-model 384 \
+  --layers 5 \
+  --ffn-expansion 2.35 \
+  --steps 300 \
+  --lr 8e-5
+```
+
+**Expansion Compatibility Rules:**
+* Target `--d-model` $\ge$ source `d_model`, target `--layers` $\ge$ source `num_layers`, and target `--state-size` $\ge$ source `state_size`.
+* Target `--heads` must equal the source `memory_heads`, and `--d-model` must be divisible by `--heads`.
+
+### E. Multi-Teacher Knowledge Distillation (`--teacher-checkpoints`)
+Anchor a student checkpoint against one or more frozen teacher checkpoints via temperature-scaled KL-divergence distillation ($T = 1.5$) blended with cross-entropy loss (`--distill-alpha`):
+
+```bash
+python gutenberg_chaotic_primordial_v0_3_0.py \
+  --init-checkpoint "Models/Test03.pt" \
+  --teacher-checkpoints "Models/Test02.pt,Models/Test03.pt" \
+  --distill-alpha 0.25 \
+  --d-model 320 \
+  --layers 5 \
+  --ffn-expansion 2.2 \
+  --seed 2026 \
+  --steps 450 \
+  --lr 8e-5
+```
+
+---
+
+## 6. Running Math & Reasoning Benchmarks
+
+All evaluation modes run deterministic greedy decoding (`temperature = 0.0`) on unseen problem instances and output a structured JSON scorecard.
+
+```bash
+# Combined 65-problem suite (40 Foundation + 25 Higher Math) — Recommended
+python gutenberg_chaotic_primordial_v0_3_0.py --mode eval-all-math --checkpoint "Models/Test01.pt"
+
+# 40 unseen Foundation Math problems (10 add, 10 sub, 10 mul, 10 base-10 to base-2)
+python gutenberg_chaotic_primordial_v0_3_0.py --mode eval-math --checkpoint "Models/Test01.pt"
+
+# 25 unseen Higher Math problems (5 pre-algebra, 5 algebra, 5 geometry, 5 trig, 5 calculus)
+python gutenberg_chaotic_primordial_v0_3_0.py --mode eval-higher-math --checkpoint "Models/Test01.pt"
+```
+
+---
+
+## 7. Text Generation & Interactive Terminal Chat
+
+### Single-Prompt Generation (`--mode generate`)
+Use `--temperature 0.0` for deterministic step-by-step math scratchpads, or `--temperature 0.5`–`0.7` with `--top-k 32` for creative prose:
+
+```bash
+# Deterministic algebra evaluation
+python gutenberg_chaotic_primordial_v0_3_0.py \
+  --mode generate \
+  --checkpoint "Models/Test01.pt" \
+  --prompt "Alg: Solve 4x + 7 = 31 ->" \
+  --temperature 0.0
+
+# Story continuation
+python gutenberg_chaotic_primordial_v0_3_0.py \
+  --mode generate \
+  --checkpoint "Models/Test02.pt" \
+  --prompt "Once upon a time" \
+  --temperature 0.6 \
+  --top-k 32 \
+  --max-new-tokens 160
+```
+
+### Interactive Terminal REPL (`--mode chat`)
+Launches an interactive prompt loop using $O(1)$ stateful streaming (type `exit` or `quit` to exit):
+
+```bash
+python gutenberg_chaotic_primordial_v0_3_0.py --mode chat --checkpoint "Models/Test01.pt" --temperature 0.0
+```
+
+---
+
+## 8. Model Scaling Presets & Full CLI Reference
+
+### Recommended Model Presets
+
+| Preset | `--d-model` | `--layers` | `--heads` | `--ffn-expansion` | Total Parameters |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Nano** (Default) | `256` | `4` | `8` | `2.0` | **4,875,972** (~4.88M) |
+| **Small** | `320` | `5` | `8` | `2.2` | **10,055,285** (~10.06M) |
+| **Medium** | `384` | `5` | `8` | `2.35` | **15,084,533** (~15.08M) |
+| **Large** | `448` | `5` | `8` | `2.25` | **19,883,381** (~19.88M) |
+
+### Complete Command-Line Arguments
+
+#### Execution & Workspace
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `--mode` | `pretrain` | One of: `pretrain`, `generate`, `chat`, `eval-math`, `eval-higher-math`, `eval-all-math`, `self-test` |
+| `--output-root` | Script dir | Root directory where `Models/` and `reports/` are read and saved |
+| `--checkpoint` | Latest | Checkpoint `.pt` path for `generate`, `chat`, and `eval-*` modes |
+| `--no-save` | `False` | Run `pretrain` without writing `TestXX.pt` or `TestXX.json` to disk |
+
+#### Datasets & Curriculum
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `--data-path` | `None` | File or directory path (`.jsonl`, `.json`, `.txt`, `.md`, `.parquet`, `.arrow`); omit for built-in math |
+| `--max-docs` | `25000` | Reservoir sample cap for external records (`0` loads all valid records) |
+| `--math-replay-ratio` | `0.20` | Fraction of Stage-1/2 math interleaved into external `--data-path` training (`0.0` to disable) |
+| `--val-ratio` | `0.05` | Fraction of sampled documents held out for validation loss/perplexity |
+| `--seq-len` | `128` | Context block length in byte tokens |
+
+#### Checkpoints, Expansion & Distillation
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `--init-checkpoint` | `None` | Exact-shape `v0.3.x` checkpoint `.pt` to resume training from |
+| `--expand-checkpoint` | `None` | Smaller `v0.3.x` checkpoint `.pt` to expand into larger `--d-model` / `--layers` |
+| `--teacher-checkpoints` | `None` | Comma-separated teacher checkpoint paths for KL-divergence distillation |
+| `--distill-alpha` | `0.35` | Weight of teacher KL distillation loss when `--teacher-checkpoints` is active |
+
+#### Model Architecture
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `--d-model` | `256` | Hidden channel dimension (must be divisible by `--heads`) |
+| `--layers` | `4` | Number of interleaved SSM + Associative Memory hybrid layers |
+| `--state-size` | `16` | Diagonal SSM state slots per channel |
+| `--heads` | `8` | Number of associative memory heads |
+| `--conv-kernel` | `3` | Causal depthwise 1D convolution kernel size |
+| `--ssm-chunk-size` | `64` | Parallel scan chunk size for the selective SSM |
+| `--ffn-expansion` | `2.0` | SwiGLU feed-forward hidden expansion multiplier |
+| `--dropout` | `0.05` | Residual dropout probability (`[0, 1)`) |
+
+#### Optimization & Reproducibility
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `--steps` | `1200` | Total optimizer steps |
+| `--batch-size` | `8` | Sequences per micro-batch |
+| `--grad-accum` | `1` | Gradient accumulation steps (`tokens_per_step = batch_size * grad_accum * seq_len`) |
+| `--lr` | `4e-4` | Peak AdamW learning rate with linear warmup and cosine decay to `0.1 * lr` |
+| `--warmup-steps` | `40` | Linear learning-rate warmup steps |
+| `--weight-decay` | `0.1` | AdamW weight decay (automatically disabled for 1D biases, norms, decays, and gates) |
+| `--eval-batches` | `4` | Validation batches evaluated per logging interval |
+| `--log-interval` | `50` | Progress logging interval in steps |
+| `--seed` | `1701` | Deterministic RNG seed for data sampling, initialization, and evaluation |
+
+#### Generation & Hardware
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `--prompt` | `"Once upon a time"` | Input prompt for `--mode generate` and post-training sample generation |
+| `--max-new-tokens` | `160` | Maximum tokens to generate |
+| `--temperature` | `0.0` | Sampling temperature (`0.0` = greedy argmax) |
+| `--top-k` | `32` | Top-k token filtering when `--temperature > 0` |
+| `--threads` | `0` | CPU intra-op threads (`0` = auto-detect physical CPU cores) |
+| `--device` | `auto` | Compute device: `auto`, `cpu`, or `cuda` |
+| `--dtype` | `float32` | Compute precision: `float32`, `bfloat16`, or `auto` (`float32` recommended on CPU) |
+
+---
+
+## 9. Troubleshooting & Performance Tips
+
+* **`ValueError: Insufficient tokens (...) for seq_len=...`:** Your dataset file is shorter than `seq_len + 1` bytes. Add more text or lower `--seq-len` (e.g., `--seq-len 64`).
+* **`ValueError: CLI model architecture flags do not match --init-checkpoint config`:** Inspect `reports/TestXX.json` under `"model_config"` and pass the exact same `--d-model`, `--layers`, `--heads`, and `--ffn-expansion` flags, or switch to `--expand-checkpoint` if you intend to scale the model up.
+* **`.parquet` or `.arrow` files are not loading:** Install `pyarrow` (`pip install pyarrow`) so the streaming reader can unpack columnar files.
+* **Maximizing CPU Throughput:** Leave `--dtype float32` on CPU (PyTorch CPU `bfloat16` emulation is slower than `float32` on most x86 processors) and set `--threads` to your physical core count if auto-detection under-allocates.
