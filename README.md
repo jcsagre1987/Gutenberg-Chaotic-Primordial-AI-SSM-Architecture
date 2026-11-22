@@ -4,6 +4,7 @@
 
 * **Author:** Juan Carlo Sagre
 * **License:** Apache-2.0
+* **Repository:** [github.com/jcsagre1987/Gutenberg-Chaotic-Primordial-AI-SSM-Architecture](https://github.com/jcsagre1987/Gutenberg-Chaotic-Primordial-AI-SSM-Architecture)
 * **Available Engine Scripts:**
   * `gutenberg_chaotic_primordial_v0_3_0.py` — **Core Architecture Engine:** Complete hybrid SSM + Associative Memory model, from-scratch pretraining, Net2Net checkpoint expansion, multi-teacher distillation, math benchmarks, and $O(1)$ streaming inference.
   * `gutenberg_chaotic_primordial_v0_3_1.py` — **Core Engine + Native LoRA Adapters:** A full backward-compatible superset of `v0.3.0` that adds frozen-base Low-Rank Adaptation (`--lora-rank`), modular `Adapters\AdapterXX.pt` serialization, hot-swappable inference/evaluation (`--lora-adapter`), and lossless weight merging (`--mode merge-lora`). Both scripts share the exact `0.3.x` checkpoint format.
@@ -31,11 +32,6 @@
 
 ## 2. Windows PowerShell Setup & Quick Verification
 
-git clone https://github.com/jcsagre1987/Gutenberg-Chaotic-Primordial-AI-SSM-Architecture.git
-cd Gutenberg-Chaotic-Primordial-AI-SSM-Architecture
-python -m pip install torch
-python gutenberg_chaotic_primordial_v0_3_1.py --mode self-test
-
 ### Requirements
 
 * **OS & Shell:** Windows 10 / 11 with **Windows PowerShell 5.1** or **PowerShell 7+**
@@ -43,26 +39,23 @@ python gutenberg_chaotic_primordial_v0_3_1.py --mode self-test
 * **Required Package:** `torch` (CPU or CUDA build)
 * **Optional Packages:** `pyarrow` or `datasets` (only needed if you plan to train directly on `.parquet` or Hugging Face `.arrow` dataset files; `.jsonl`, `.json`, `.txt`, and `.md` work out of the box with standard Python)
 
-Open **Windows PowerShell**, navigate to the folder containing the engine scripts, and install dependencies:
+### Clone, Install & Verify in PowerShell
+
+Open **Windows PowerShell**, clone the repository, install PyTorch, and run the built-in self-test suite:
 
 ```powershell
-cd "C:\Path\To\Gutenberg Chaotic Primordial"
+git clone https://github.com/jcsagre1987/Gutenberg-Chaotic-Primordial-AI-SSM-Architecture.git
+cd Gutenberg-Chaotic-Primordial-AI-SSM-Architecture
 python -m pip install torch
 
 # Optional: enable .parquet and Hugging Face .arrow dataset loading
 python -m pip install pyarrow
-```
 
-### Verify Your Environment
-
-Before starting a training run, execute the built-in self-test suite in PowerShell to verify chunkwise SSM continuation, associative memory state equivalence, $O(1)$ streaming parity, and finite gradients:
-
-```powershell
-# Verify v0.3.0 core architecture engine
-python gutenberg_chaotic_primordial_v0_3_0.py --mode self-test
-
-# Verify v0.3.1 engine (includes LoRA gradient isolation & lossless merge parity tests)
+# Verify v0.3.1 engine (includes core SSM/memory + LoRA gradient & merge parity tests)
 python gutenberg_chaotic_primordial_v0_3_1.py --mode self-test
+
+# Or verify the standalone v0.3.0 core architecture engine
+python gutenberg_chaotic_primordial_v0_3_0.py --mode self-test
 ```
 
 A healthy installation outputs `"overall_status": "PASS"`.
