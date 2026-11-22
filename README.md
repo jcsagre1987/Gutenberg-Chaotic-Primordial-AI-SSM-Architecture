@@ -6,21 +6,17 @@
 * **License:** Apache-2.0
 * **Engine File:** `gutenberg_chaotic_primordial_v0_3_0.py`
 
----
-
 ## Table of Contents
 
 1. [Architecture Highlights](#1-architecture-highlights)
-2. [Installation & Quick Verification](#2-installation--quick-verification)
+2. [Windows PowerShell Setup & Quick Verification](#2-windows-powershell-setup--quick-verification)
 3. [Workspace Layout & Automatic Checkpoint Management](#3-workspace-layout--automatic-checkpoint-management)
 4. [Using Your Own Datasets & Directories](#4-using-your-own-datasets--directories)
-5. [Training, Resuming, Expanding & Distilling Checkpoints](#5-training-resuming-expanding--distilling-checkpoints)
-6. [Running Math & Reasoning Benchmarks](#6-running-math--reasoning-benchmarks)
-7. [Text Generation & Interactive Terminal Chat](#7-text-generation--interactive-terminal-chat)
+5. [PowerShell Training, Resuming, Expanding & Distillation Workflows](#5-powershell-training-resuming-expanding--distillation-workflows)
+6. [Running Math & Reasoning Benchmarks in PowerShell](#6-running-math--reasoning-benchmarks-in-powershell)
+7. [Text Generation & Interactive Terminal Chat in PowerShell](#7-text-generation--interactive-terminal-chat-in-powershell)
 8. [Model Scaling Presets & Full CLI Reference](#8-model-scaling-presets--full-cli-reference)
-9. [Troubleshooting & Performance Tips](#9-troubleshooting--performance-tips)
-
----
+9. [PowerShell Tips & Troubleshooting](#9-powershell-tips--troubleshooting)
 
 ## 1. Architecture Highlights
 
@@ -29,60 +25,61 @@
 * **Dual-Stream Delta-Rule Associative Memory (`DeltaRuleAssociativeMemory`):** Maintains fast-weight associative matrices ($d_{\text{head}} \times d_{\text{head}}$ per head) with a 1-step key shift, learnable bigram phrase mixing, $L_2$-normalized queries and keys, gated delta-rule updates ($\beta_t, \gamma_t$), chunkwise triangular-solve parallel scanning, and a learnable sigmoid residual gate per layer.
 * **Exact $O(1)$ Streaming Inference:** Full-sequence parallel training and token-by-token autoregressive generation are mathematically equivalent, keeping inference memory constant regardless of sequence length.
 
----
-
-## 2. Installation & Quick Verification
+## 2. Windows PowerShell Setup & Quick Verification
 
 ### Requirements
+
+* **OS & Shell:** Windows 10 / 11 with **Windows PowerShell 5.1** or **PowerShell 7+**
 * **Python:** `3.10` or newer (`3.11` recommended)
 * **Required Package:** `torch` (CPU or CUDA build)
 * **Optional Packages:** `pyarrow` or `datasets` (only needed if you plan to train directly on `.parquet` or Hugging Face `.arrow` dataset files; `.jsonl`, `.json`, `.txt`, and `.md` work out of the box with standard Python)
 
-```bash
-pip install torch
+Open **Windows PowerShell**, navigate to the folder containing `gutenberg_chaotic_primordial_v0_3_0.py`, and install dependencies:
+
+```powershell
+cd "C:\Path\To\Gutenberg Chaotic Primordial"
+python -m pip install torch
+
 # Optional: enable .parquet and Hugging Face .arrow dataset loading
-pip install pyarrow
+python -m pip install pyarrow
 ```
 
 ### Verify Your Environment
-Before starting a training run, execute the built-in self-test suite to verify chunkwise SSM continuation, associative memory state equivalence, $O(1)$ streaming parity, and finite gradients:
 
-```bash
+Before starting a training run, execute the built-in self-test suite in PowerShell to verify chunkwise SSM continuation, associative memory state equivalence, $O(1)$ streaming parity, and finite gradients:
+
+```powershell
 python gutenberg_chaotic_primordial_v0_3_0.py --mode self-test
 ```
 
 A healthy installation outputs `"overall_status": "PASS"`.
 
----
-
 ## 3. Workspace Layout & Automatic Checkpoint Management
 
-By default, the script creates and manages `Models/` and `reports/` inside the directory where `gutenberg_chaotic_primordial_v0_3_0.py` lives. If you keep your code and experiment outputs in separate folders, pass `--output-root /path/to/workspace`:
+By default, the script creates and manages `Models\` and `reports\` inside the directory where `gutenberg_chaotic_primordial_v0_3_0.py` lives. If you keep your code and experiment outputs in separate folders, pass `--output-root "D:\MyWorkspace"`:
 
 ```text
-<output-root>/
+<output-root>\
 ├── gutenberg_chaotic_primordial_v0_3_0.py
-├── Models/
+├── Models\
 │   ├── Test01.pt        # Sequential atomic model checkpoints
 │   └── Test02.pt
-└── reports/
+└── reports\
     ├── Test01.json      # Reproducibility metadata, metrics & SHA-256 hashes
     └── Test02.json
 ```
 
 * **Sequential, Non-Destructive Saves:** Every completed training run writes the next available `TestXX.pt` and `TestXX.json` via atomic file replacement (`fsync` + rename) so existing checkpoints are never overwritten.
-* **Automatic Latest-Checkpoint Discovery:** In inference or evaluation modes (`generate`, `chat`, `eval-math`, `eval-higher-math`, `eval-all-math`), omitting `--checkpoint` automatically selects the highest-numbered `TestXX.pt` inside `<output-root>/Models/`.
-
----
+* **Automatic Latest-Checkpoint Discovery:** In inference or evaluation modes (`generate`, `chat`, `eval-math`, `eval-higher-math`, `eval-all-math`), omitting `--checkpoint` automatically selects the highest-numbered `TestXX.pt` inside `<output-root>\Models\`.
 
 ## 4. Using Your Own Datasets & Directories
 
-You do not need to move your datasets into the repository folder or convert them into a rigid format. Point `--data-path` to **any single file** or **any root directory** on your machine—the loader recursively scans subdirectories (`rglob`) and automatically skips Hugging Face metadata files (`dataset_info.json`, `state.json`).
+You do not need to move your datasets into the repository folder or convert them into a rigid format. In PowerShell, point `--data-path` to **any single file** or **any root directory** on your drive (always wrap paths containing spaces in double quotes `"..."`). The loader recursively scans subdirectories (`rglob`) and automatically skips Hugging Face metadata files (`dataset_info.json`, `state.json`).
 
 ### Supported File Formats
 
 | Extension | How It Is Parsed | Extra Dependency |
-| :--- | :--- | :---: |
+| :--- | :--- | :--- |
 | `.jsonl`, `.ndjson` | Line-delimited JSON objects (malformed lines are safely skipped) | None |
 | `.json` | Top-level JSON array `[...]`, single object, or dict containing `"data"`, `"rows"`, `"records"`, `"examples"`, or `"train"` | None |
 | `.txt`, `.md` | Split into documents on blank lines (`\n\n`), or line-by-line if single-spaced | None |
@@ -132,135 +129,126 @@ When reading `.jsonl`, `.json`, `.parquet`, or `.arrow` records, the loader auto
 * **Cross-Document State Isolation:** Each document is encoded as `[BOS] ... [EOS]` followed by `4` `PAD` tokens (`PAD_TOKEN_ID = 0`, ignored by cross-entropy loss) before packing into `[N, seq_len + 1]` blocks, preventing recurrent SSM and associative memory states from bleeding across unrelated documents.
 * **Catastrophic Forgetting Prevention (`--math-replay-ratio`):** When training on external prose or instruction datasets via `--data-path`, the loader interleaves built-in Stage-1 and Stage-2 math traces (`--math-replay-ratio 0.20` = 20% math by default) to preserve arithmetic and symbolic reasoning. Set `--math-replay-ratio 0.0` if you want pure language training.
 
----
+## 5. PowerShell Training, Resuming, Expanding & Distillation Workflows
 
-## 5. Training, Resuming, Expanding & Distilling Checkpoints
+> **PowerShell Syntax Note:** In Windows PowerShell, multi-line commands use the **backtick character (`` ` ``)** at the end of a line (not `\`), and directory paths use Windows backslashes (`Models\Test01.pt`). All single-line commands below can be pasted directly into PowerShell.
 
 ### A. Train from Scratch on the Built-In Math Curriculum
-Omitting `--data-path`, `--init-checkpoint`, and `--expand-checkpoint` trains a fresh model on the built-in Stage-1 & Stage-2 mathematics curriculum (8-bit binary conversion, carry addition, borrow subtraction, multiplication, pre-algebra, algebra, geometry, trigonometry, and calculus):
 
-```bash
-# Default Nano model (4.88M parameters: d_model=256, layers=4)
+Omitting `--data-path`, `--init-checkpoint`, and `--expand-checkpoint` initializes a fresh model and trains on the built-in Stage-1 & Stage-2 mathematics curriculum (8-bit binary conversion, carry addition, borrow subtraction, multiplication, pre-algebra, algebra, geometry, trigonometry, and calculus):
+
+```powershell
+# Default Nano model (4.88M parameters: d_model=256, layers=4, ffn_expansion=2.0) -> saves Models\Test01.pt
 python gutenberg_chaotic_primordial_v0_3_0.py --steps 1200 --lr 4e-4
 
-# Custom Small model (10.06M parameters: d_model=320, layers=5, ffn_expansion=2.2)
+# Custom Small model (10.06M parameters: d_model=320, layers=5, ffn_expansion=2.2) -> saves Models\Test02.pt
 python gutenberg_chaotic_primordial_v0_3_0.py --d-model 320 --layers 5 --ffn-expansion 2.2 --steps 1200 --lr 4e-4
 ```
 
 ### B. Train on Your Own External Dataset Directory
-Point `--data-path` to any folder or file on Linux, macOS, or Windows:
 
-```bash
-# Linux / macOS example
-python gutenberg_chaotic_primordial_v0_3_0.py \
-  --data-path "/home/user/datasets/my_corpus" \
-  --max-docs 25000 \
-  --math-replay-ratio 0.20 \
-  --steps 1500 \
+Point `--data-path` to any folder or file on your machine (single-line or multi-line with PowerShell backticks):
+
+```powershell
+# Single-line PowerShell command
+python gutenberg_chaotic_primordial_v0_3_0.py --data-path "C:\Training Datasets\Tinystories" --max-docs 25000 --math-replay-ratio 0.20 --steps 1500 --lr 4e-4
+
+# Multi-line PowerShell command (using backtick ` line continuation)
+python gutenberg_chaotic_primordial_v0_3_0.py `
+  --data-path "D:\Datasets\Alpaca" `
+  --d-model 320 `
+  --layers 5 `
+  --ffn-expansion 2.2 `
+  --max-docs 25000 `
+  --math-replay-ratio 0.20 `
+  --steps 1500 `
   --lr 4e-4
-
-# Windows PowerShell example
-python gutenberg_chaotic_primordial_v0_3_0.py --data-path "D:\Datasets\Tinystories" --max-docs 25000 --math-replay-ratio 0.20 --steps 1500 --lr 4e-4
 ```
 
 ### C. Continue Training an Existing Checkpoint (`--init-checkpoint`)
-Resume training from a saved `v0.3.x` checkpoint. Your `--d-model`, `--layers`, `--heads`, and `--ffn-expansion` flags **must match** the source checkpoint's configuration (saved inside `reports/TestXX.json`):
 
-```bash
-python gutenberg_chaotic_primordial_v0_3_0.py \
-  --init-checkpoint "Models/Test02.pt" \
-  --d-model 320 \
-  --layers 5 \
-  --ffn-expansion 2.2 \
-  --seed 2026 \
-  --steps 500 \
-  --lr 8e-5
+Resume training from a saved `v0.3.x` checkpoint at the **same architecture dimensions**. Check `reports\TestXX.json` first if you are unsure which dimensions a checkpoint was created with:
+
+```powershell
+# Inspect a checkpoint's saved architecture dimensions in PowerShell
+Get-Content "reports\Test01.json" | ConvertFrom-Json | Select-Object -ExpandProperty model_config
+
+# 1) Resume a default Nano checkpoint (4.88M: d_model=256, layers=4, ffn_expansion=2.0)
+python gutenberg_chaotic_primordial_v0_3_0.py --init-checkpoint "Models\Test01.pt" --seed 2026 --steps 500 --lr 8e-5
+
+# 2) Resume a custom Small checkpoint (10.06M: d_model=320, layers=5, ffn_expansion=2.2)
+python gutenberg_chaotic_primordial_v0_3_0.py --init-checkpoint "Models\Test02.pt" --d-model 320 --layers 5 --ffn-expansion 2.2 --seed 2026 --steps 500 --lr 8e-5
 ```
 
+> **Important:** `--init-checkpoint` requires `--d-model`, `--layers`, `--heads`, and `--ffn-expansion` to match the source checkpoint exactly. To grow a smaller checkpoint into larger dimensions, use `--expand-checkpoint` below.
+
 ### D. Function-Preserving Model Expansion (`--expand-checkpoint`)
+
 Scale a smaller checkpoint into a wider and/or deeper architecture using Net2Net-style weight preservation. Existing channels retain their learned weights (with LayerNorm variance compensation and near-identity initialization for newly added layers), while extra channels receive small symmetry-breaking noise:
 
-```bash
-# Expand 10.06M (d_model=320, ffn=2.2) -> 15.08M (d_model=384, ffn=2.35)
-python gutenberg_chaotic_primordial_v0_3_0.py \
-  --expand-checkpoint "Models/Test03.pt" \
-  --d-model 384 \
-  --layers 5 \
-  --ffn-expansion 2.35 \
-  --steps 300 \
-  --lr 8e-5
+```powershell
+# 1) Expand default Nano (4.88M: d_model=256, layers=4, ffn=2.0) -> Small (10.06M: d_model=320, layers=5, ffn=2.2)
+python gutenberg_chaotic_primordial_v0_3_0.py --expand-checkpoint "Models\Test01.pt" --d-model 320 --layers 5 --ffn-expansion 2.2 --steps 300 --lr 8e-5
+
+# 2) Expand Small (10.06M: d_model=320, layers=5, ffn=2.2) -> Medium (15.08M: d_model=384, layers=5, ffn=2.35)
+python gutenberg_chaotic_primordial_v0_3_0.py --expand-checkpoint "Models\Test02.pt" --d-model 384 --layers 5 --ffn-expansion 2.35 --steps 300 --lr 8e-5
 ```
 
 **Expansion Compatibility Rules:**
+
 * Target `--d-model` $\ge$ source `d_model`, target `--layers` $\ge$ source `num_layers`, and target `--state-size` $\ge$ source `state_size`.
 * Target `--heads` must equal the source `memory_heads`, and `--d-model` must be divisible by `--heads`.
 
 ### E. Multi-Teacher Knowledge Distillation (`--teacher-checkpoints`)
+
 Anchor a student checkpoint against one or more frozen teacher checkpoints via temperature-scaled KL-divergence distillation ($T = 1.5$) blended with cross-entropy loss (`--distill-alpha`):
 
-```bash
-python gutenberg_chaotic_primordial_v0_3_0.py \
-  --init-checkpoint "Models/Test03.pt" \
-  --teacher-checkpoints "Models/Test02.pt,Models/Test03.pt" \
-  --distill-alpha 0.25 \
-  --d-model 320 \
-  --layers 5 \
-  --ffn-expansion 2.2 \
-  --seed 2026 \
-  --steps 450 \
-  --lr 8e-5
+```powershell
+python gutenberg_chaotic_primordial_v0_3_0.py --init-checkpoint "Models\Test02.pt" --teacher-checkpoints "Models\Test01.pt,Models\Test02.pt" --distill-alpha 0.25 --d-model 320 --layers 5 --ffn-expansion 2.2 --seed 2026 --steps 450 --lr 8e-5
 ```
 
----
+## 6. Running Math & Reasoning Benchmarks in PowerShell
 
-## 6. Running Math & Reasoning Benchmarks
+All evaluation modes run deterministic greedy decoding (`temperature = 0.0`) on unseen problem instances and output a structured JSON scorecard in PowerShell:
 
-All evaluation modes run deterministic greedy decoding (`temperature = 0.0`) on unseen problem instances and output a structured JSON scorecard.
-
-```bash
+```powershell
 # Combined 65-problem suite (40 Foundation + 25 Higher Math) — Recommended
-python gutenberg_chaotic_primordial_v0_3_0.py --mode eval-all-math --checkpoint "Models/Test01.pt"
+python gutenberg_chaotic_primordial_v0_3_0.py --mode eval-all-math --checkpoint "Models\Test01.pt"
 
 # 40 unseen Foundation Math problems (10 add, 10 sub, 10 mul, 10 base-10 to base-2)
-python gutenberg_chaotic_primordial_v0_3_0.py --mode eval-math --checkpoint "Models/Test01.pt"
+python gutenberg_chaotic_primordial_v0_3_0.py --mode eval-math --checkpoint "Models\Test01.pt"
 
 # 25 unseen Higher Math problems (5 pre-algebra, 5 algebra, 5 geometry, 5 trig, 5 calculus)
-python gutenberg_chaotic_primordial_v0_3_0.py --mode eval-higher-math --checkpoint "Models/Test01.pt"
+python gutenberg_chaotic_primordial_v0_3_0.py --mode eval-higher-math --checkpoint "Models\Test01.pt"
+
+# Omit --checkpoint to automatically evaluate the newest TestXX.pt in Models\
+python gutenberg_chaotic_primordial_v0_3_0.py --mode eval-all-math
 ```
 
----
-
-## 7. Text Generation & Interactive Terminal Chat
+## 7. Text Generation & Interactive Terminal Chat in PowerShell
 
 ### Single-Prompt Generation (`--mode generate`)
+
 Use `--temperature 0.0` for deterministic step-by-step math scratchpads, or `--temperature 0.5`–`0.7` with `--top-k 32` for creative prose:
 
-```bash
+```powershell
 # Deterministic algebra evaluation
-python gutenberg_chaotic_primordial_v0_3_0.py \
-  --mode generate \
-  --checkpoint "Models/Test01.pt" \
-  --prompt "Alg: Solve 4x + 7 = 31 ->" \
-  --temperature 0.0
+python gutenberg_chaotic_primordial_v0_3_0.py --mode generate --checkpoint "Models\Test01.pt" --prompt "Alg: Solve 4x + 7 = 31 ->" --temperature 0.0
 
 # Story continuation
-python gutenberg_chaotic_primordial_v0_3_0.py \
-  --mode generate \
-  --checkpoint "Models/Test02.pt" \
-  --prompt "Once upon a time" \
-  --temperature 0.6 \
-  --top-k 32 \
-  --max-new-tokens 160
+python gutenberg_chaotic_primordial_v0_3_0.py --mode generate --checkpoint "Models\Test02.pt" --prompt "Once upon a time" --temperature 0.6 --top-k 32 --max-new-tokens 160
+
+# Instruction prompt using PowerShell newline escape (`n)
+python gutenberg_chaotic_primordial_v0_3_0.py --mode generate --checkpoint "Models\Test02.pt" --prompt "Instruction: Explain why the sky looks blue.`nResponse:" --temperature 0.6 --top-k 24
 ```
 
 ### Interactive Terminal REPL (`--mode chat`)
-Launches an interactive prompt loop using $O(1)$ stateful streaming (type `exit` or `quit` to exit):
 
-```bash
-python gutenberg_chaotic_primordial_v0_3_0.py --mode chat --checkpoint "Models/Test01.pt" --temperature 0.0
+Launches a live interactive prompt loop inside PowerShell using $O(1)$ stateful streaming (type `exit` or `quit` to exit):
+
+```powershell
+python gutenberg_chaotic_primordial_v0_3_0.py --mode chat --checkpoint "Models\Test01.pt" --temperature 0.0
 ```
-
----
 
 ## 8. Model Scaling Presets & Full CLI Reference
 
@@ -276,14 +264,16 @@ python gutenberg_chaotic_primordial_v0_3_0.py --mode chat --checkpoint "Models/T
 ### Complete Command-Line Arguments
 
 #### Execution & Workspace
+
 | Flag | Default | Description |
 | :--- | :--- | :--- |
 | `--mode` | `pretrain` | One of: `pretrain`, `generate`, `chat`, `eval-math`, `eval-higher-math`, `eval-all-math`, `self-test` |
-| `--output-root` | Script dir | Root directory where `Models/` and `reports/` are read and saved |
+| `--output-root` | Script dir | Root directory where `Models\` and `reports\` are read and saved |
 | `--checkpoint` | Latest | Checkpoint `.pt` path for `generate`, `chat`, and `eval-*` modes |
 | `--no-save` | `False` | Run `pretrain` without writing `TestXX.pt` or `TestXX.json` to disk |
 
 #### Datasets & Curriculum
+
 | Flag | Default | Description |
 | :--- | :--- | :--- |
 | `--data-path` | `None` | File or directory path (`.jsonl`, `.json`, `.txt`, `.md`, `.parquet`, `.arrow`); omit for built-in math |
@@ -293,6 +283,7 @@ python gutenberg_chaotic_primordial_v0_3_0.py --mode chat --checkpoint "Models/T
 | `--seq-len` | `128` | Context block length in byte tokens |
 
 #### Checkpoints, Expansion & Distillation
+
 | Flag | Default | Description |
 | :--- | :--- | :--- |
 | `--init-checkpoint` | `None` | Exact-shape `v0.3.x` checkpoint `.pt` to resume training from |
@@ -301,6 +292,7 @@ python gutenberg_chaotic_primordial_v0_3_0.py --mode chat --checkpoint "Models/T
 | `--distill-alpha` | `0.35` | Weight of teacher KL distillation loss when `--teacher-checkpoints` is active |
 
 #### Model Architecture
+
 | Flag | Default | Description |
 | :--- | :--- | :--- |
 | `--d-model` | `256` | Hidden channel dimension (must be divisible by `--heads`) |
@@ -313,6 +305,7 @@ python gutenberg_chaotic_primordial_v0_3_0.py --mode chat --checkpoint "Models/T
 | `--dropout` | `0.05` | Residual dropout probability (`[0, 1)`) |
 
 #### Optimization & Reproducibility
+
 | Flag | Default | Description |
 | :--- | :--- | :--- |
 | `--steps` | `1200` | Total optimizer steps |
@@ -326,6 +319,7 @@ python gutenberg_chaotic_primordial_v0_3_0.py --mode chat --checkpoint "Models/T
 | `--seed` | `1701` | Deterministic RNG seed for data sampling, initialization, and evaluation |
 
 #### Generation & Hardware
+
 | Flag | Default | Description |
 | :--- | :--- | :--- |
 | `--prompt` | `"Once upon a time"` | Input prompt for `--mode generate` and post-training sample generation |
@@ -336,11 +330,14 @@ python gutenberg_chaotic_primordial_v0_3_0.py --mode chat --checkpoint "Models/T
 | `--device` | `auto` | Compute device: `auto`, `cpu`, or `cuda` |
 | `--dtype` | `float32` | Compute precision: `float32`, `bfloat16`, or `auto` (`float32` recommended on CPU) |
 
----
+## 9. PowerShell Tips & Troubleshooting
 
-## 9. Troubleshooting & Performance Tips
-
+* **Quote Paths With Spaces:** Always wrap paths like `"C:\Training Datasets\Tinystories"` or `"Models\Test01.pt"` in double quotes so PowerShell passes them as a single argument.
+* **Inspecting JSON Reports Directly in PowerShell:** You can inspect any saved run report's config or scores right in your terminal:
+  ```powershell
+  Get-Content "reports\Test01.json" | ConvertFrom-Json | Select-Object -ExpandProperty model_config
+  ```
 * **`ValueError: Insufficient tokens (...) for seq_len=...`:** Your dataset file is shorter than `seq_len + 1` bytes. Add more text or lower `--seq-len` (e.g., `--seq-len 64`).
-* **`ValueError: CLI model architecture flags do not match --init-checkpoint config`:** Inspect `reports/TestXX.json` under `"model_config"` and pass the exact same `--d-model`, `--layers`, `--heads`, and `--ffn-expansion` flags, or switch to `--expand-checkpoint` if you intend to scale the model up.
-* **`.parquet` or `.arrow` files are not loading:** Install `pyarrow` (`pip install pyarrow`) so the streaming reader can unpack columnar files.
+* **`ValueError: CLI model architecture flags do not match --init-checkpoint config`:** Check `reports\TestXX.json` under `"model_config"` and pass the exact same `--d-model`, `--layers`, `--heads`, and `--ffn-expansion` flags, or switch to `--expand-checkpoint` if you intend to scale the model up.
+* **`.parquet` or `.arrow` files are not loading:** Install `pyarrow` (`python -m pip install pyarrow`) so the streaming reader can unpack columnar files.
 * **Maximizing CPU Throughput:** Leave `--dtype float32` on CPU (PyTorch CPU `bfloat16` emulation is slower than `float32` on most x86 processors) and set `--threads` to your physical core count if auto-detection under-allocates.
